@@ -18,6 +18,7 @@ And the code supports two reconstruction methods:
 Two time-advancement techniques are implemented:
 
 * 4th-order Runge-Kutta
+* 3rd-order Runge-Kutta
 * Euler time-advancement
 
 Below is the result of SOD shock tube problem (t = 0.25) solved by Godunov, Roe, HLL, and HLLC method. The computational domain consists 300 cells and 0-order reconstruction is used.
