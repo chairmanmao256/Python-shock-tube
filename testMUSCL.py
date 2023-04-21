@@ -4,14 +4,13 @@ import matplotlib.pyplot as plt
 import RiemannExact as RE
 
 # Specify the control file locations
-path_Roe = "./RoeTest/test"
-path_HLLC = "./HLLCTest/test"
-path_HLL = "./HLLTest/test"
+path_minmod = "./HLLCTest_minmod/test"
+path_VanLeer = "./HLLCTest_VanLeer/test"
+path_zero = "./HLLCTest_zero/test"
 
-path_list = [path_Roe, path_HLLC, path_HLL]
-name_list = ["Roe", "HLLC", "HLL"]
-save_list = ["./Results/Roe/test", "./Results/AUSM/test"]
-save_loc = "./Img/test"
+path_list = [path_minmod, path_VanLeer, path_zero]
+name_list = ["minmod", "Van Leer", "0-order"]
+save_loc = "./ImgMUSCL/test"
 y_list = [r"$\rho$", r"$u$", r"$p$"]
 
 # Define the problems to solve (For the exact Godunov solver)
@@ -57,25 +56,25 @@ for j in range(5): # go through all the problems
     t0 = problems_dic["t0"][j]
     x0 = problems_dic["x0"][j]
 
-    # Solve the approximate Riemann Problem
+    #Solve the approximate Riemann Problem
     cfl = 0.10
     global_t = 0.0
     while global_t < t0:
-        dt = solver0.time_advancement_RK(cfl = cfl)
+        dt = solver0.time_advancement_RK3(cfl = cfl)
         global_t += dt
     solver0.con2Prim()
 
     cfl = 0.10
     global_t = 0.0
     while global_t < t0:
-        dt = solver1.time_advancement_RK(cfl = cfl)
+        dt = solver1.time_advancement_RK3(cfl = cfl)
         global_t += dt
     solver1.con2Prim()
 
     cfl = 0.10
     global_t = 0.0
     while global_t < t0:
-        dt = solver2.time_advancement_RK(cfl = cfl)
+        dt = solver2.time_advancement_RK3(cfl = cfl)
         global_t += dt
     solver2.con2Prim()
 
@@ -89,9 +88,9 @@ for j in range(5): # go through all the problems
     fig, ax = plt.subplots(1,3, figsize = (15,4), dpi = 200, sharex = True)
     y_list = [r"$\rho$", r"$u$", r"$p$", r"$e_{int}$"]
     for k in range(3):
-        ax[k].plot(solver0.mesh, solver0.sol[k, :], label = "Roe")
-        ax[k].plot(solver1.mesh, solver1.sol[k, :], label = "HLLC")
-        ax[k].plot(solver2.mesh, solver2.sol[k, :], label = "HLL")
+        ax[k].plot(solver0.mesh, solver0.sol[k, :], label = "Minmod")
+        ax[k].plot(solver1.mesh, solver1.sol[k, :], label = "Van Leer")
+        ax[k].plot(solver2.mesh, solver2.sol[k, :], label = "0-order")
         ax[k].plot(x, Esol[k], label = "Exact", linestyle = "dashed")
         ax[k].legend()
         ax[k].grid()
@@ -101,4 +100,3 @@ for j in range(5): # go through all the problems
     
     fig.savefig(save_loc+str(j+1)+".png")
     print(f"*************** Completed {j} ****************\n")
-    

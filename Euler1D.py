@@ -91,7 +91,7 @@ class Euler1D:
                 if self.FLopt not in flux_limiter_list:
                     raise Exception("The available flux limiters are:\n\
                                      0: minmod\n\
-                                     1: vanalbada TVD")
+                                     1: Van Leer")
                     raise Exception("Other Flux limitter options not supported yet!")
                 found_key = 0
             elif found_key == 7:
@@ -110,6 +110,12 @@ class Euler1D:
         # store the reconstructed values on the cell interface
         self.rec_l = np.zeros((3, self.ncells+1), dtype = np.float64)
         self.rec_r = np.zeros((3, self.ncells+1), dtype = np.float64)
+
+        # store the limitted slope for centered TVD-MUSCL reconstruction
+        self.D = np.zeros_like(self.sol)
+
+        # store the difference between every cell interface
+        self.del_U = np.zeros_like(self.rec_l)
 
         # store the averaged value on the interface 
         self.avg = np.zeros((3, self.ncells+1), dtype = np.float64)
@@ -403,6 +409,47 @@ class Euler1D:
         if np.min(self.rec_l[0, :]) <= 0 or np.min(self.rec_r[0, :]) <= 0:
             raise Exception("negative density encountered!")
 
+    def reconstruction_TVD_centered(self):
+        '''
+        ### Description
+
+        Reconstruct the conservative variables directly (characteristic reconstruction is not used).
+        Centered formulation is used here for clarity:
+
+        U_{j+1/2} = U_{j+1} - U_{j}
+        D_{j} = B(\Delta U_{j-1/2}, \Delta U_{j+1/2})
+        UL_{j+1/2} = U_{j} + 1/2 * D_{j}
+        UR_{j-1/2} = U_{j} - 1/2 * D_{j}
+
+        +-------+-------+-------+
+        |       |       |       |
+        |U_{j-1}| U_{j} |U_{j+1}|
+        |       |       |       |
+        +-------+-------+-------+
+
+        '''
+        # calculate D_j for every cell, including the virtual cell
+        self.del_U = np.hstack((self.sol, self.vR)) - np.hstack((self.vL, self.sol))
+        del_UL = self.vL - self.vLL
+        del_UR = self.vRR - self.vR
+
+        # choose the limiter
+        match self.FLopt:
+            case 0:
+                self.D = self.B_minmod(self.del_U[:, 0:-1], self.del_U[:, 1:])
+                DL = self.B_minmod(del_UL, self.del_U[:, 0].reshape(-1,1))
+                DR = self.B_minmod(self.del_U[:, -1].reshape(-1,1), del_UR)
+            case 1:
+                self.D = self.B_VanLeer(self.del_U[:, 0:-1], self.del_U[:, 1:])
+                DL = self.B_VanLeer(del_UL, self.del_U[:, 0].reshape(-1,1))
+                DR = self.B_VanLeer(self.del_U[:, -1].reshape(-1,1), del_UR)
+
+        # perform the reconstruction
+        self.rec_l[:, 1:] = self.sol + 0.5 * self.D
+        self.rec_l[:, 0] = (self.vL + 0.5 * DL).ravel()
+        self.rec_r[:, 0:-1] = self.sol - 0.5 * self.D
+        self.rec_r[:, -1] = (self.vR - 0.5 * DR).ravel()
+
     def roe_flux_alter(self):
         ncells = self.ncells
         # left state
@@ -652,11 +699,11 @@ class Euler1D:
         self.sol = self.sol_old - dt/self.dx * (self.flux[:, 1:] - self.flux[:, 0:-1])
         return dt
 
-    def time_advancement_RK(self, cfl: float):
+    def time_advancement_RK4(self, cfl: float) -> float:
         '''
         ### Description
 
-        Perform the Runge-Kutta time advancement
+        Use Runge-Kutta 4th order time advancement
         '''
         r = self.sol[0, :]
         u = self.sol[1, :]/r
@@ -669,11 +716,15 @@ class Euler1D:
         self.set_old()
         for j in range(4):
             dtt = dt / float(4 - j)
+            # choose Reconstruction method
             if self.reconstruction == 1:
                 # self.reconstruction_TVD()
-                self.reconstruction_MUSCL_TVD()
+                # self.reconstruction_MUSCL_TVD()
+                self.reconstruction_TVD_centered()
             elif self.reconstruction == 0:
                 self.reconstruction_0()
+
+            # choose Riemann solver
             if self.RSopt == 0:
                 self.exact_flux()
             elif self.RSopt == 1:
@@ -685,6 +736,47 @@ class Euler1D:
             elif self.RSopt == 4:
                 self.HLL_family_flux(choice = 4)
             self.sol = self.sol_old - dtt/self.dx * (self.flux[:, 1:] - self.flux[:, 0:-1])
+        
+        return dt
+
+    def time_advancement_RK3(self, cfl: float) -> float:
+        '''
+        ### Description
+
+        Use Runge-Kutta 3rd order time advancement
+        '''
+        r = self.sol[0, :]
+        u = self.sol[1, :]/r
+        E = self.sol[2, :]/r
+        p = (1.4 - 1) * (self.sol[2, :] - r * u * u / 2.0)
+        a = np.sqrt(1.4 * p / r)
+        Smax = np.max(np.vstack((abs(u+a),abs(u-a), abs(u))))
+        dt = cfl * self.dx / Smax
+
+        self.set_old()
+        alpha1 = [1.0, 3.0/4.0, 1.0/3.0]
+        alpha2 = [0.0, 1.0/4.0, 2.0/3.0]
+        alpha3 = [1.0, 1.0/4.0, 2.0/3.0]
+
+        for j in range(3):
+            # choose Reconstruction method
+            if self.reconstruction == 1:
+                self.reconstruction_TVD_centered()
+            elif self.reconstruction == 0:
+                self.reconstruction_0()
+
+            # choose Riemann solver
+            if self.RSopt == 0:
+                self.exact_flux()
+            elif self.RSopt == 1:
+                self.roe_flux_alter()
+            elif self.RSopt == 2:
+                self.AUSM_flux()
+            elif self.RSopt == 3:
+                self.HLL_family_flux(choice = 3)
+            elif self.RSopt == 4:
+                self.HLL_family_flux(choice = 4)
+            self.sol = alpha1[j] * self.sol_old + alpha2[j] * self.sol - alpha3[j] * dt/self.dx * (self.flux[:, 1:] - self.flux[:, 0:-1])
         
         return dt
 
@@ -712,6 +804,23 @@ class Euler1D:
                     + (abs(u+a) -eps >= 0).astype(np.int32) * abs(u+a)
 
         return lamb
+
+#  The flux limiters. Implemented in both centered form and non-centered form
+    def B_minmod(self, a: np.ndarray, b: np.ndarray):
+        '''
+        ### Description:
+
+        Centered-form flux limiter, minmod. The operation is performed element-wise.
+        '''
+        return 0.5 * (np.sign(a)+np.sign(b)) * np.minimum(np.abs(a), np.abs(b))
+
+    def B_VanLeer(self, a: np.ndarray, b: np.ndarray):
+        '''
+        ### Description
+
+        Centered-form flux limiter, Van Leer. The operation is performed element-wise.
+        '''
+        return a * b * (np.sign(a) + np.sign(b)) / (np.abs(a) + np.abs(b) + 1e-6)
 
     def minmod(self, a: np.ndarray, b: np.ndarray):
         '''

@@ -23,3 +23,5 @@ Two time-advancement techniques are implemented:
 Below is the result of SOD shock tube problem (t = 0.25) solved by Godunov, Roe, HLL, and HLLC method. The computational domain consists 300 cells and 0-order reconstruction is used.
 
 <img src="./SOD.png" alt="SOD" style="zoom:50%;" />
+
+The initial condition, the location of discontinuity, and the numerical methods can be specified in the control files. The examples of control files can be found in `*Test` directories.
