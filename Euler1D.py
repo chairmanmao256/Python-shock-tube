@@ -8,12 +8,13 @@ flux limiters will be added.
 Wcy, 2022.11
 '''
 gamma = 1.4
+ga1 = gamma - 1.0
 zz = (gamma - 1.0) / (2.0 * gamma)
 import numpy as np
 import RiemannExact as RE
 
 class Euler1D:
-    def __init__(self, fname = "settings.txt"):
+    def __init__(self, fname = "settings.txt", SO = False):
         '''
         ### Description
 
@@ -36,7 +37,7 @@ class Euler1D:
         lines = file.readlines()
         iL = 0
         found_key = 0
-        reconstruction_list = [0, 1]
+        reconstruction_list = [0, 1, 2]
         flux_limiter_list = [0, 1]
         Riemann_solver_list = [0, 1, 2, 3, 4]
         while iL<len(lines):
@@ -99,7 +100,8 @@ class Euler1D:
                 if self.reconstruction not in reconstruction_list:
                     raise Exception("The available reconstruction methods are:\n\
                                      0: Zero order\n\
-                                     1: 2nd order TVD")
+                                     1: 2nd order TVD\n\
+                                     2: 5th order WENO")
 
             iL += 1
         
@@ -128,29 +130,65 @@ class Euler1D:
         self.vL = np.zeros((3,1), dtype = np.float64)
         self.vRR = np.zeros((3,1), dtype = np.float64)
         self.vR = np.zeros((3,1), dtype = np.float64)
+
+        # store the eigen vectors for every interface
+        self.Li = np.zeros((3,3,self.ncells+1),dtype=np.float64)
+        self.Ri = np.zeros((3,3,self.ncells+1),dtype=np.float64)
+
+        # store the WENO-5 polynomial coefficient
+        self.weno_c = np.array([
+            [11.0/6.0, -7.0/6.0, 1.0/3.0],
+            [1.0/3.0, 5.0/6.0, -1.0/6.0],
+            [-1.0/6.0, 5.0/6.0, 1.0/3.0],
+            [1.0/3.0, -7.0/6.0, 11.0/6.0]
+        ])
     
         # calculate the mesh information
-        self.dx = 1.0 / float(self.ncells)
-        self.mesh = np.linspace(-0.0 + 0.5*self.dx, 1.0 - 0.5*self.dx, self.ncells)
+        self.SO = SO
+        if not SO:
+            self.dx = 1.0 / float(self.ncells)
+            self.mesh = np.linspace(-0.0 + 0.5*self.dx, 1.0 - 0.5*self.dx, self.ncells)
 
-        # set the initial condition
-        for i in range(self.ncells):
-            if self.mesh[i] <= self.interface:
-                self.sol[0][i] = self.rho1
-                self.sol[1][i] = self.u1
-                self.sol[2][i] = self.p1
-            else:
-                self.sol[0][i] = self.rho2
-                self.sol[1][i] = self.u2
-                self.sol[2][i] = self.p2
+            # set the initial condition
+            for i in range(self.ncells):
+                if self.mesh[i] <= self.interface:
+                    self.sol[0][i] = self.rho1
+                    self.sol[1][i] = self.u1
+                    self.sol[2][i] = self.p1
+                else:
+                    self.sol[0][i] = self.rho2
+                    self.sol[1][i] = self.u2
+                    self.sol[2][i] = self.p2
+        else:
+            self.dx = 10.0 / float(self.ncells)
+            self.mesh = np.linspace(-0.0 + 0.5*self.dx, 10.0 - 0.5*self.dx, self.ncells)
+
+            # set the initial condition
+            for i in range(self.ncells):
+                if self.mesh[i] < 1.0:
+                    self.sol[0][i] = 3.857
+                    self.sol[1][i] = 2.629
+                    self.sol[2][i] = 10.333
+                else:
+                    self.sol[0][i] = 1.0 + 0.2 * np.sin(5.0 * (self.mesh[i]-5.0))
+                    self.sol[1][i] = 0.0
+                    self.sol[2][i] = 1.0
+
+
         self.set_boundary()
         self.prim2Con(0)
 
     def set_boundary(self):
         self.vL = self.sol[:, 0].copy().reshape(-1,1)
         self.vLL = self.sol[:, 0].copy().reshape(-1,1)
-        self.vR = self.sol[:, -1].copy().reshape(-1,1)
-        self.vRR = self.sol[:, -1].copy().reshape(-1,1)
+
+        if not self.SO:
+            self.vR = self.sol[:, -1].copy().reshape(-1,1)
+            self.vRR = self.sol[:, -1].copy().reshape(-1,1)
+        else:
+            self.vR = 2.0 * self.sol[:, -1].copy().reshape(-1,1)-\
+                      1.0 * self.sol[:, -2].copy().reshape(-1,1)
+            self.vRR = 2.0 * self.vR - 1.0 * self.sol[:, -1].copy().reshape(-1,1)
 
     def con2Prim(self, mode = 0):
         '''
@@ -237,14 +275,32 @@ class Euler1D:
 
         This function gives the roe-averaged value on the interface
         '''
-        self.avg[0, :] = np.sqrt(self.rec_l[0, :] * self.rec_r[0, :]).copy()
-        self.avg[1, :] = ((np.sqrt(self.rec_l[0, :]) * self.rec_l[1, :] + np.sqrt(self.rec_r[0, :]) * self.rec_r[1, :]) / \
-                         (np.sqrt(self.rec_l[0, :])+np.sqrt(self.rec_r[0, :]))).copy()
-        HL = (1.4 / (1.4-1.0) * self.rec_l[2, :] / self.rec_l[0, :]).copy()
-        HR = (1.4 / (1.4-1.0) * self.rec_r[2, :] / self.rec_r[0, :]).copy()
-        Hav = (((HR * np.sqrt(self.rec_r[0, :]) + HL * np.sqrt(self.rec_l[0, :]))) / (np.sqrt(self.rec_l[0, :])+np.sqrt(self.rec_r[0, :]))).copy()
-        a2 = ((1.4-1.0)*(Hav - 0.5*self.avg[1, :]**2)).copy()
-        self.avg[2, :] = (self.avg[0, :] * a2 / 1.4).copy()
+        self.reconstruction_0()
+        # left state
+        rL = self.rec_l[0, :].copy()
+        uL = self.rec_l[1, :]/rL
+        EL = self.rec_l[2, :]/rL
+        pL = (1.4 - 1) * (self.rec_l[2, :] - rL * uL * uL / 2.0)
+        aL = np.sqrt(1.4 * pL / rL)
+        HL = (self.rec_l[2, :] + pL) / rL
+
+        # right state
+        rR = self.rec_r[0, :].copy()
+        uR = self.rec_r[1, :]/rR
+        ER = self.rec_r[2, :]/rR
+        pR = (1.4 - 1) * (self.rec_r[2, :] - rR * uR * uR / 2.0)
+        aR = np.sqrt(1.4 * pR / rR)
+        HR = (self.rec_r[2, :] + pR) / rR
+
+        # roe averages
+        ratio = np.sqrt(rR / rL)
+        r = ratio * rL
+        u = (uL + ratio * uR) / (1 + ratio)
+        H = (HL + ratio * HR) / (1 + ratio)
+        a = np.sqrt((1.4 - 1)*(H - u * u / 2.0))
+        self.avg[0,:] = r.copy()
+        self.avg[1,:] = r * u
+        self.avg[2,:] = a**2 * r / (gamma * ga1) + 0.5 * r * u * u
 
     def reconstruction_0(self):
         '''
@@ -267,147 +323,6 @@ class Euler1D:
                 self.rec_l[0,i] = 1e-3
             if self.rec_r[0, i] <= 0:
                 self.rec_r[0,i] = 1e-3
-
-    def reconstruction_MUSCL_TVD(self, omega = -1.0, omega_bar = 1.0):
-        '''
-        ### Description
-
-        Use MUSCL reconstruction technique presented in the course materials
-        '''
-        if omega_bar < 1.0 or omega_bar > (3 - omega) / (1 - omega):
-            raise Exception("Omega_bar should be larger than 1 and smaller than (3-omega)/(1-omega)!")
-        
-        L = np.hstack((self.vL, self.sol[:, :]))
-        LL = np.hstack((self.vLL, self.vL, self.sol[:, 0:-1]))
-        R = np.hstack((self.sol[:, :], self.vR))
-        RR = np.hstack((self.sol[:, 1:], self.vR, self.vRR))
-        del1 = L - LL
-        del2 = R - L
-        del3 = RR - R
-
-        del1_bb = np.zeros_like(del1)
-        del2_b = np.zeros_like(del1)
-        del2_bb = np.zeros_like(del1)
-        del3_b = np.zeros_like(del1)
-
-        for j in range(3):
-            del1_bb[j, :] = self.minmod(del1[j, :], omega_bar * del2[j, :])
-            del2_b[j, :] = self.minmod(del2[j, :], omega_bar * del1[j, :])
-            del2_bb[j, :] = self.minmod(del2[j, :], omega_bar * del3[j, :])
-            del3_b[j, :] = self.minmod(del3[j, :], omega_bar * del2[j, :])
-
-        self.rec_l = L + 0.25 * ((1 - omega)*del1_bb + (1 + omega)*del2_b)
-        self.rec_r = R - 0.25 * ((1 - omega)*del3_b + (1 + omega)*del2_bb)
-
-        if np.min(self.rec_l[0, :]) <= 0 or np.min(self.rec_r[0, :]) <= 0:
-            raise Exception("negative density encountered!")
-
-    def reconstruction_TVD(self, flag = "simple-reconstruct"):
-        '''
-        ### Description:
-
-        Conduct the TVD reconstruction. Flux limiter is used and the spatial order is 2.
-        '''
-        ncells = self.ncells
-        dx = self.dx
-        # the left eigen vector matrix
-        LM = np.zeros((3,3,ncells+1))
-        # the right eigen vector matrix
-        RM = np.zeros((3,3, ncells+1))
-
-        Dr = np.zeros((3, ncells+1))
-        Dl = np.zeros((3, ncells+1))
-        temp_r = np.zeros((3, ncells+1))
-        temp_l = np.zeros((3, ncells+1))
-
-        # we now convert the cell-center values to conservative form
-        # self.prim2Con(mode = 0)
-
-        '''
-        for every interface, we need the LL, L, R and RR value adjacent to 
-        the interface, which is shown graphically below:
-
-        | LL | L | R | RR |
-                 ^
-                  The interface we want to reconstruct 
-        '''
-        L = np.hstack((self.vL, self.sol[:, :]))
-        LL = np.hstack((self.vLL, self.vL, self.sol[:, 0:-1]))
-        R = np.hstack((self.sol[:, :], self.vR))
-        RR = np.hstack((self.sol[:, 1:], self.vR, self.vRR))
-
-        # do the following steps when the user specifies the eigen-version 
-        # of reconstruction
-        # calculate the left eigen vectors
-        if flag == "eigen-reconstruct":
-            rho = self.avg[0, :].copy()
-            u = self.avg[1, :].copy()
-            p = self.avg[2, :].copy()
-            a = np.sqrt(1.4*p/rho)
-            h = 1.4/(1.4-1.0)*p/rho
-            
-            LM[0, 0, :] = (-u**3 + a*u**2 + 2.0*h*u) / (2.0*(-a*u**2+2.0*a*h))
-            LM[0, 1, :] = -(- u*u + 2.0*a*u + 2.0*h)/(2.0*(- a*u**2 + 2.0*a*h))
-            LM[0, 2, :] = 1.0/(- u**2 + 2.0*h)
-            LM[1, 0, :] = (2.0*(- u**2 + h))/(- u**2 + 2.0*h)
-            LM[1, 1, :] = (2.0*u)/(- u**2 + 2.0*h)
-            LM[1, 2, :] = -2.0/(- u**2 + 2.0*h)
-            LM[2, 0, :] = (u**3 + a*u**2 - 2.0*h*u)/(2.0*(- a*u**2 + 2.0*a*h))
-            LM[2, 1, :] = -(u**2 + 2.0*a*u - 2.0*h)/(2.0*(- a*u**2 + 2.0*a*h))
-            LM[2, 2, :] = 1.0/(- u**2 + 2.0*h)
-
-            RM[0, 0, :] = 1.0
-            RM[0, 1, :] = 1.0
-            RM[0, 2, :] = 1.0
-            RM[1, 0, :] = u-a
-            RM[1, 1, :] = u
-            RM[1, 2, :] = u+a
-            RM[2, 0, :] = h-u*a
-            RM[2, 1, :] = 0.5*u*u
-            RM[2, 2, :] = h+u*a
-
-            for j in range(3):
-                rdiff = (RR[0, :] - R[0, :]) * LM[j, 0, :] + (RR[1, :] - R[1, :]) * LM[j, 1, :] + \
-                        (RR[2, :] - R[2, :]) * LM[j, 2, :]
-                ldiff = (R[0, :] - L[0, :]) * LM[j, 0, :] + (R[1, :] - L[1, :]) * LM[j, 1, :] + \
-                        (R[2, :] - L[2, :]) * LM[j, 2, :]
-                Dr[j, :] = self.minmod(rdiff, ldiff)
-
-                rdiff = (R[0, :] - L[0, :]) * LM[j, 0, :] + (R[1, :] - L[1, :]) * LM[j, 1, :] + \
-                        (R[2, :] - L[2, :]) * LM[j, 2, :]
-                ldiff = (L[0, :] - LL[0, :]) * LM[j, 0, :] + (L[1, :] - LL[1, :]) * LM[j, 1, :] + \
-                        (L[2, :] - LL[2, :]) * LM[j, 2, :]
-                Dl[j, :] = self.minmod(ldiff, rdiff)
-
-                temp_l[j, :] = LM[j, 0, :] * L[0, :] + LM[j, 1, :] * L[1, :] + LM[j, 2, :] * L[2, :] + Dl[j, :] * 0.5
-                temp_r[j, :] = LM[j, 0, :] * R[0, :] + LM[j, 1, :] * R[1, :] + LM[j, 2, :] * R[2, :] - Dr[j, :] * 0.5
-
-            for j in range(3):
-                self.rec_l[j, :] = RM[j, 0, :] * temp_l[0, :] + RM[j, 1, :] * temp_l[1, :] + RM[j, 2, :] * temp_l[2, :]
-                self.rec_r[j, :] = RM[j, 0, :] * temp_r[0, :] + RM[j, 1, :] * temp_r[1, :] + RM[j, 2, :] * temp_r[2, :]
-
-        # if we do not use the eigen version reconstruction...
-        else:
-            for j in range(3):
-                rdiff = RR[j, :] - R[j, :]
-                ldiff = R[j, :] - L[j, :]
-                if self.FLopt == 0:
-                    Dr[j, :] = self.minmod(rdiff, 1.5 * ldiff)
-                elif self.FLopt == 1:
-                    Dr[j, :] = self.vanalbada(rdiff, ldiff)
-
-                rdiff = R[j, :] - L[j, :]
-                ldiff = L[j, :] - LL[j, :]
-                if self.FLopt == 0:
-                    Dl[j, :] = self.minmod(1.5 * rdiff, ldiff)
-                elif self.FLopt == 1:
-                    Dl[j, :] = self.vanalbada(rdiff, ldiff)
-            
-            self.rec_l = L + 0.5 * Dl
-            self.rec_r = R - 0.5 * Dr
-
-        if np.min(self.rec_l[0, :]) <= 0 or np.min(self.rec_r[0, :]) <= 0:
-            raise Exception("negative density encountered!")
 
     def reconstruction_TVD_centered(self):
         '''
@@ -449,6 +364,156 @@ class Euler1D:
         self.rec_l[:, 0] = (self.vL + 0.5 * DL).ravel()
         self.rec_r[:, 0:-1] = self.sol - 0.5 * self.D
         self.rec_r[:, -1] = (self.vR - 0.5 * DR).ravel()
+
+    def calc_eigen(self):
+        '''
+        ### Description
+
+        Calculate the eigen vectors for every interface
+        '''
+
+        # calculate the Roe's average for every interface
+        self.avg_roe()
+        
+        for i in range(self.ncells+1):
+            rho = self.avg[0,i]
+            u = self.avg[1,i] / rho
+            E = self.avg[2,i] / rho
+            p = ga1 * (self.avg[2,i] - 0.5 * rho * u * u)
+            a = np.sqrt(gamma * p / rho)
+            H = (self.avg[2,i] + p) / rho
+
+            self.Ri[:, :, i] = np.array([[1.0, u-a, H-u*a], 
+                                        [1.0, u, 0.5*u*u], 
+                                        [1.0, u+a, H+u*a]]).T
+            self.Li[:, :, i] = np.array([[ga1/4.0*(u/a)**2+0.5*u/a, -ga1/a*u/(a*2)-1.0/(2.0*a), ga1/(2.0*a*a)],
+                                         [1-ga1/2.0*(u/a)**2, ga1*u/(a**2), -ga1/a**2],
+                                         [ga1/4.0*(u/a)**2-0.5*u/a, -ga1/a*u/(a*2)+1.0/(2.0*a), ga1/(2.0*a*a)]])
+
+    def nonlinear_weight(self, q: np.ndarray):
+        '''
+        ### Description
+
+        Use difference method to calculate the non-linear weight. Based on 
+        the note written by Shu. It is only for the WENO-5th order scheme
+
+        q is the 5-dimensional vector containing the stencil i:
+        ++---++---++---++---++---++
+        ||i-2||i-1|| i ||i+1||i+2||
+        ++---++---++---++---++---++
+          q[0] q[1] q[2] q[3] q[4]
+
+        The function should be called for every conservative variable.
+        '''
+        eps = 1e-8
+
+        # calculate the smooth-indicator
+        beta0 = 13.0/12.0*(q[2]-2.0*q[3]+q[4])**2 + \
+                1.0/4.0*(3.0*q[2]-4.0*q[3]+q[4])**2
+        beta1 = 13.0/12.0*(q[1]-2.0*q[2]+q[3])**2 + \
+                1.0/4.0*(q[1]-q[3])**2
+        beta2 = 13.0/12.0*(q[0]-2.0*q[1]+q[2])**2 + \
+                1.0/4.0*(q[0]-4.0*q[1]+3.0*q[2])**2
+        beta = np.array([beta0, beta1, beta2])
+
+        # linear weights
+        d = np.array([3.0/10.0, 6.0/10.0, 1.0/10.0])
+        d_bar = np.array([1.0/10.0, 6.0/10.0, 3.0/10.0])
+
+        # assemble nonlinear weights
+        alpha = d / (beta + eps)**2
+        alpha_bar = d_bar / (beta + eps)**2
+
+        weight = alpha / np.sum(alpha)
+        weight_bar = alpha_bar / np.sum(alpha_bar)
+        
+        return weight, weight_bar
+    
+    def polynomial_WENO5(self, q: np.ndarray):
+        '''
+        ### Description
+
+        5-dimensional vector is fed in, with the central one the cell being reconstructed.
+        '''
+        qR = []
+        qL = []
+        for r in range(3):
+            vr = q[2-r:5-r] @ self.weno_c[r, :]
+            qR.append(vr)
+            
+            vr = q[2-r:5-r] @ self.weno_c[r+1, :]
+            qL.append(vr)
+
+        return np.array(qR), np.array(qL)
+
+    def reconstruction_WENO5_cell(self, cellI: int):
+        '''
+        ### Description:
+
+        Peform 5th order WENO reconstruction. Requires 2 virtual cells on the 
+        boundary. The stencil is as follows:
+        ++---++---++---++---++---++
+        ||i-2||i-1|| i ||i+1||i+2||
+        ++---++---++---++---++---++
+        The stencil above is used to reconstruct the right, left state of cell i.
+        '''
+        # assemble the virtual cells and the internal cells
+        U = np.hstack((self.vLL, self.vL, self.sol, self.vR, self.vRR))
+        self.calc_eigen()
+        for i in range(self.ncells):
+            # i-1/2
+            l1, l2, l3 = self.Li[0, :, i], self.Li[1, :, i], self.Li[2, :, i]
+            r1, r2, r3 = self.Ri[0, :, i], self.Ri[1, :, i], self.Ri[2, :, i]
+
+            v1 = np.array([l1 @ U[:, i], l1 @ U[:, i+1], l1 @ U[:, i+2], l1 @ U[:, i+3], l1 @ U[:, i+4]])
+            v2 = np.array([l2 @ U[:, i], l2 @ U[:, i+1], l2 @ U[:, i+2], l2 @ U[:, i+3], l2 @ U[:, i+4]])
+            v3 = np.array([l3 @ U[:, i], l3 @ U[:, i+1], l3 @ U[:, i+2], l3 @ U[:, i+3], l3 @ U[:, i+4]])
+
+            _, weight_bar1 = self.nonlinear_weight(v1)
+            _, weight_bar2 = self.nonlinear_weight(v2)
+            _, weight_bar3 = self.nonlinear_weight(v3)
+
+            vr1, _ = self.polynomial_WENO5(v1)
+            vr2, _ = self.polynomial_WENO5(v2)
+            vr3, _ = self.polynomial_WENO5(v3)
+
+            v_rec1 = weight_bar1 @ vr1
+            v_rec2 = weight_bar2 @ vr2
+            v_rec3 = weight_bar3 @ vr3
+            v = np.array([v_rec1, v_rec2, v_rec3])
+
+            self.rec_r[0, i] = r1@v
+            self.rec_r[1, i] = r2@v
+            self.rec_r[2, i] = r3@v
+
+            # i + 1/2
+            l1, l2, l3 = self.Li[0, :, i+1], self.Li[1, :, i+1], self.Li[2, :, i+1]
+            r1, r2, r3 = self.Ri[0, :, i+1], self.Ri[1, :, i+1], self.Ri[2, :, i+1]
+
+            v1 = np.array([l1 @ U[:, i], l1 @ U[:, i+1], l1 @ U[:, i+2], l1 @ U[:, i+3], l1 @ U[:, i+4]])
+            v2 = np.array([l2 @ U[:, i], l2 @ U[:, i+1], l2 @ U[:, i+2], l2 @ U[:, i+3], l2 @ U[:, i+4]])
+            v3 = np.array([l3 @ U[:, i], l3 @ U[:, i+1], l3 @ U[:, i+2], l3 @ U[:, i+3], l3 @ U[:, i+4]])
+
+            weight1, _ = self.nonlinear_weight(v1)
+            weight2, _ = self.nonlinear_weight(v2)
+            weight3, _ = self.nonlinear_weight(v3)
+
+            _, vr1 = self.polynomial_WENO5(v1)
+            _, vr2 = self.polynomial_WENO5(v2)
+            _, vr3 = self.polynomial_WENO5(v3)
+
+            v_rec1 = weight1 @ vr1
+            v_rec2 = weight2 @ vr2
+            v_rec3 = weight3 @ vr3
+            v = np.array([v_rec1, v_rec2, v_rec3])
+
+            self.rec_l[0, i+1]= r1@v
+            self.rec_l[1, i+1] = r2@v
+            self.rec_l[2, i+1] = r3@v
+
+        # zero-order reconstruction for the boundary
+        self.rec_l[:, 0] = self.vL.ravel().copy()
+        self.rec_r[:, self.ncells] = self.vR.ravel().copy()
 
     def roe_flux_alter(self):
         ncells = self.ncells
@@ -764,6 +829,8 @@ class Euler1D:
                 self.reconstruction_TVD_centered()
             elif self.reconstruction == 0:
                 self.reconstruction_0()
+            elif self.reconstruction == 2:
+                self.reconstruction_WENO5_cell(0)
 
             # choose Riemann solver
             if self.RSopt == 0:
