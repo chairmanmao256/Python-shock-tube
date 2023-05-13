@@ -12,17 +12,23 @@ Note that the Godunov Riemann solver is rewritten from this repository: [ToroExa
 
 And the code supports two reconstruction methods:
 
-* 0-order
+* 0th-order
 * MUSCL-TVD
+* 5th-order WENO
 
-Two time-advancement techniques are implemented:
+Three time-advancement techniques are implemented:
 
-* 4th-order Runge-Kutta
-* 3rd-order Runge-Kutta
+* 3th-order Runge-Kutta
+* 4rd-order Runge-Kutta
 * Euler time-advancement
 
 Below is the result of SOD shock tube problem (t = 0.25) solved by Godunov, Roe, HLL, and HLLC method. The computational domain consists 300 cells and 0-order reconstruction is used.
 
-<img src="./SOD.png" alt="SOD" style="zoom:50%;" />
+<img src="./gallery/SOD.png" alt="SOD" style="zoom:50%;" />
+
+Shu-Ohser problem is solved on 500 cells using the MUSCL-TVD method and the 5th-order WENO method. HLLC Riemann solver gives the flux on the interface. It can be seen that the 5-th order WENO method gives a much better resolution of the high frequency 
+oscillation near the discontinuity.
+
+<img src="./gallery/Shu-Osher.png" alt="Shu-Osher" style="zoom:50$;" />
 
 The initial condition, the location of discontinuity, and the numerical methods can be specified in the control files. The examples of control files can be found in `*Test` directories.
