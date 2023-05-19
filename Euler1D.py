@@ -14,13 +14,15 @@ import numpy as np
 import RiemannExact as RE
 
 class Euler1D:
-    def __init__(self, fname = "settings.txt", SO = False):
+    def __init__(self, fname = "settings.txt", SO = False, FD = False):
         '''
         ### Description
 
         We initialize the Euler 1d solver by a file. All the settings can be found in the code
         listed below. Comments about them will be added here later.
         '''
+        # determine in what mode we will run the program
+        self.FD = FD
 
         file = open(fname, mode = "r")
         key_dict = {
@@ -113,6 +115,10 @@ class Euler1D:
         self.rec_l = np.zeros((3, self.ncells+1), dtype = np.float64)
         self.rec_r = np.zeros((3, self.ncells+1), dtype = np.float64)
 
+        # store the interface flux for the finite difference method
+        self.flux_neg = np.zeros((3, self.ncells+1), dtype = np.float64) # f^-
+        self.flux_pos = np.zeros((3, self.ncells+1), dtype = np.float64) # f^+
+
         # store the limitted slope for centered TVD-MUSCL reconstruction
         self.D = np.zeros_like(self.sol)
 
@@ -134,6 +140,9 @@ class Euler1D:
         # store the eigen vectors for every interface
         self.Li = np.zeros((3,3,self.ncells+1),dtype=np.float64)
         self.Ri = np.zeros((3,3,self.ncells+1),dtype=np.float64)
+
+        # store the eigen value for every interface
+        self.eigi = np.zeros((3, self.ncells+1),dtype=np.float64)
 
         # store the WENO-5 polynomial coefficient
         self.weno_c = np.array([
@@ -389,6 +398,8 @@ class Euler1D:
             self.Li[:, :, i] = np.array([[ga1/4.0*(u/a)**2+0.5*u/a, -ga1/a*u/(a*2)-1.0/(2.0*a), ga1/(2.0*a*a)],
                                          [1-ga1/2.0*(u/a)**2, ga1*u/(a**2), -ga1/a**2],
                                          [ga1/4.0*(u/a)**2-0.5*u/a, -ga1/a*u/(a*2)+1.0/(2.0*a), ga1/(2.0*a*a)]])
+            
+            self.eigi[:, i] = np.array([u-a, u, u+a])
 
     def nonlinear_weight(self, q: np.ndarray):
         '''
@@ -514,6 +525,90 @@ class Euler1D:
         # zero-order reconstruction for the boundary
         self.rec_l[:, 0] = self.vL.ravel().copy()
         self.rec_r[:, self.ncells] = self.vR.ravel().copy()
+
+    def flux_(self, U:np.ndarray)->np.ndarray:
+        '''
+        ### Description
+
+        Given the conservative variables, calculate the flux
+        '''
+        rho = U[0]
+        u = U[1] / rho
+        E = U[2] / rho
+        p = ga1 * (U[2] - 0.5 * rho * u * u)
+
+        f = np.array([rho * u, rho*u*u + p, (rho * E + p)*u])
+        return f
+
+    def FD_flux_WENO5(self):
+        '''
+        ### Description
+        Use 5-th order WENO reconstruction to calculate the numerical 
+        flux directly. It is a finite-difference based method
+
+        Requires 2 virtual cells on the boundary. The stencil is as follows:
+        ++---++---++---++---++---++
+        ||i-2||i-1|| i ||i+1||i+2||
+        ++---++---++---++---++---++
+        '''
+        # assemble the virtual cells and the internal cells
+        U = np.hstack((self.vLL, self.vL, self.sol, self.vR, self.vRR))
+        self.calc_eigen()
+        for i in range(self.ncells):
+            # i-1/2
+            l1, l2, l3 = self.Li[0, :, i], self.Li[1, :, i], self.Li[2, :, i]
+
+            v1 = np.array([l1 @ self.flux_(U[:, i]), l1 @ self.flux_(U[:, i+1]), l1 @ self.flux_(U[:, i+2]), l1 @ self.flux_(U[:, i+3]), l1 @ self.flux_(U[:, i+4])])
+            v2 = np.array([l2 @ self.flux_(U[:, i]), l2 @ self.flux_(U[:, i+1]), l2 @ self.flux_(U[:, i+2]), l2 @ self.flux_(U[:, i+3]), l2 @ self.flux_(U[:, i+4])])
+            v3 = np.array([l3 @ self.flux_(U[:, i]), l3 @ self.flux_(U[:, i+1]), l3 @ self.flux_(U[:, i+2]), l3 @ self.flux_(U[:, i+3]), l3 @ self.flux_(U[:, i+4])])
+
+            _, weight_bar1 = self.nonlinear_weight(v1)
+            _, weight_bar2 = self.nonlinear_weight(v2)
+            _, weight_bar3 = self.nonlinear_weight(v3)
+
+            vr1, _ = self.polynomial_WENO5(v1)
+            vr2, _ = self.polynomial_WENO5(v2)
+            vr3, _ = self.polynomial_WENO5(v3)
+
+            v_rec1 = weight_bar1 @ vr1
+            v_rec2 = weight_bar2 @ vr2
+            v_rec3 = weight_bar3 @ vr3
+            v = np.array([v_rec1, v_rec2, v_rec3])
+
+            self.flux_neg[:, i] = v.copy()
+
+            # i+1/2
+            l1, l2, l3 = self.Li[0, :, i+1], self.Li[1, :, i+1], self.Li[2, :, i+1]
+
+            v1 = np.array([l1 @ self.flux_(U[:, i]), l1 @ self.flux_(U[:, i+1]), l1 @ self.flux_(U[:, i+2]), l1 @ self.flux_(U[:, i+3]), l1 @ self.flux_(U[:, i+4])])
+            v2 = np.array([l2 @ self.flux_(U[:, i]), l2 @ self.flux_(U[:, i+1]), l2 @ self.flux_(U[:, i+2]), l2 @ self.flux_(U[:, i+3]), l2 @ self.flux_(U[:, i+4])])
+            v3 = np.array([l3 @ self.flux_(U[:, i]), l3 @ self.flux_(U[:, i+1]), l3 @ self.flux_(U[:, i+2]), l3 @ self.flux_(U[:, i+3]), l3 @ self.flux_(U[:, i+4])])
+
+            weight1, _ = self.nonlinear_weight(v1)
+            weight2, _ = self.nonlinear_weight(v2)
+            weight3, _ = self.nonlinear_weight(v3)
+
+            _, vr1 = self.polynomial_WENO5(v1)
+            _, vr2 = self.polynomial_WENO5(v2)
+            _, vr3 = self.polynomial_WENO5(v3)
+
+            v_rec1 = weight1 @ vr1
+            v_rec2 = weight2 @ vr2
+            v_rec3 = weight3 @ vr3
+            v = np.array([v_rec1, v_rec2, v_rec3])
+
+            self.flux_pos[:, i+1] = v.copy()
+
+         # zero-order reconstruction for the boundary
+        self.flux_neg[:, self.ncells] = self.Li[:,:,self.ncells]@(self.flux_(self.vR).ravel())
+        self.flux_pos[:, 0] = self.Li[:,:,0]@(self.flux_(self.vL).ravel())
+
+        # compute the numerical flux at the interface
+        for i in range(self.ncells+1):
+            V = 0.5 * (np.eye(3) + np.sign(np.diag(self.eigi[:, i]))) @ self.flux_pos[:, i] +\
+                0.5 * (np.eye(3) - np.sign(np.diag(self.eigi[:, i]))) @ self.flux_neg[:, i]
+            
+            self.flux[:, i] = self.Ri[:,:,i] @ V
 
     def roe_flux_alter(self):
         ncells = self.ncells
@@ -824,25 +919,29 @@ class Euler1D:
         alpha3 = [1.0, 1.0/4.0, 2.0/3.0]
 
         for j in range(3):
-            # choose Reconstruction method
-            if self.reconstruction == 1:
-                self.reconstruction_TVD_centered()
-            elif self.reconstruction == 0:
-                self.reconstruction_0()
-            elif self.reconstruction == 2:
-                self.reconstruction_WENO5_cell(0)
+            if not self.FD:
+                # choose Reconstruction method
+                if self.reconstruction == 1:
+                    self.reconstruction_TVD_centered()
+                elif self.reconstruction == 0:
+                    self.reconstruction_0()
+                elif self.reconstruction == 2:
+                    self.reconstruction_WENO5_cell(0)
 
-            # choose Riemann solver
-            if self.RSopt == 0:
-                self.exact_flux()
-            elif self.RSopt == 1:
-                self.roe_flux_alter()
-            elif self.RSopt == 2:
-                self.AUSM_flux()
-            elif self.RSopt == 3:
-                self.HLL_family_flux(choice = 3)
-            elif self.RSopt == 4:
-                self.HLL_family_flux(choice = 4)
+                # choose Riemann solver
+                if self.RSopt == 0:
+                    self.exact_flux()
+                elif self.RSopt == 1:
+                    self.roe_flux_alter()
+                elif self.RSopt == 2:
+                    self.AUSM_flux()
+                elif self.RSopt == 3:
+                    self.HLL_family_flux(choice = 3)
+                elif self.RSopt == 4:
+                    self.HLL_family_flux(choice = 4)
+            else:
+                self.FD_flux_WENO5()
+            
             self.sol = alpha1[j] * self.sol_old + alpha2[j] * self.sol - alpha3[j] * dt/self.dx * (self.flux[:, 1:] - self.flux[:, 0:-1])
         
         return dt
