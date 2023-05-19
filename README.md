@@ -22,6 +22,11 @@ Three time-advancement techniques are implemented:
 * 4rd-order Runge-Kutta
 * Euler time-advancement
 
+On the other hand, the code also supports WENO 5th-order finite-difference discretization using characteristic decomposition method to compute the flux. To make the code operate in finite-difference mode, just set the argument `FD` to `True` when the `Euler1D` object is instantiated.
+```
+solver = Euler1D.Euler1D("./HLLCTest_WENO/SOD-WENO.txt", FD = True)
+```
+
 Below is the result of SOD shock tube problem (t = 0.25) solved by Godunov, Roe, HLL, and HLLC method. The computational domain consists 300 cells and 0-order reconstruction is used.
 
 <img src="./gallery/SOD.png" alt="SOD" style="zoom:50%;" />
