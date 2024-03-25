@@ -1,4 +1,4 @@
-# 1D Euler equation solve written in Python
+# 1D Euler equation solver written in Python
 
 This code can solve 1D shock tube problem using FVM method. Currently the following Riemann solvers are implemented:
 
